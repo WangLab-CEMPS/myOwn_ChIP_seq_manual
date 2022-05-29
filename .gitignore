@@ -7,4 +7,5 @@ downstream/**/*.rda
 downstream/**/*.csv
 downstream/**/*.bam*
 downstream/**/*.bed*
-downstream/**/*Peak*
+downstream/**/*.narrowPeak
+downstream/**/*.broadPeak

@@ -1,0 +1,106 @@
+---
+title: "DiffBind_analysis_onlyPeakCount"
+author: "Guandong Shang"
+date: '2022-05-29'
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      collapse = TRUE)
+```
+
+有些时候，你想要其他的软件，比如说DESeq2或者edgeR等去分析ChIP-seq和ATAC-seq的数据。他们会要求一个表达量矩阵，这里我演示如何得到feature count矩阵，尽管这些内容在前面的两个文档中都已经提过了。
+
+
+这里用的是CIM0d-SIM8d的ATAC-seq数据
+
+```{bash}
+tree rawdata/{bam,peak}
+```
+
+# 前期准备
+
+```{r}
+library(DiffBind)
+
+library(BiocParallel)
+
+library(magrittr)
+```
+
+```{r}
+bam_files <- list.files("rawdata/bam",pattern = "bam$", full.names = T)
+peak_files <- list.files("rawdata/peak", full.names = T)
+
+bam_files
+
+peak_files
+```
+
+```{r}
+
+tissue <- rep(c("CIM0d", "CIM3d", "CIM5d", "CIM7d", "SIM3d", "SIM6d", "SIM8d"), each = 2)
+
+# 注意这里ATAC-seq没有control相关的几列
+sample_info <- data.frame(
+  SampleID = paste(tissue, c("R1", "R2"), sep = "_") ,
+  
+  Tissue = tissue,
+  
+  Replicate = 1:2,
+  
+  bamReads = bam_files, 
+  
+  Peaks = peak_files, 
+  
+  PeakCaller = "narrow"
+  
+) 
+
+sample_info
+```
+
+```{r}
+# Reading in peaksets
+dba <- dba(sampleSheet = sample_info)
+dba
+```
+
+
+```{r}
+# Counting reads
+# ATAC-seq没有input，所以不需要做graylist
+# 由于ATAC-seq相对来说也是narrowPeak，所以我这里将summit关闭
+
+# 同时注意，因为我们这里只想要raw count做后面的分析
+# 而不是矫正过后的count
+# 所以这里的score要设置为DBA_SCORE_READS
+dba <- dba.count(dba, summits = FALSE, score = DBA_SCORE_READS)
+
+dba
+```
+
+
+# 提取和输出结果
+
+```{r}
+peakInfo <- dba.peakset(dba, bRetrieve = TRUE)
+names(peakInfo) <- paste("ATAC_", names(peakInfo))
+
+# 注意到这里的值都是整数，而不像我们之前的文档里面有小数点
+# 因为我们提取的是rawcount
+peakInfo
+
+# 这里的矩阵就可以作为一些软件的输入了
+peakCount_mt <- as.matrix(mcols(peakInfo))
+head(peakCount_mt)
+```
+
+```{r}
+mcols(peakInfo) <- NULL
+peakInfo$feature_id <- names(peakInfo)
+
+# 这里的peakInfo可以用作注释软件的输入
+peakInfo
+```
