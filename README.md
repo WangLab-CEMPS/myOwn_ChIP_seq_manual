@@ -1,5 +1,7 @@
 # myOwn_ChIP_seq_manual
 
+这个仓库收集了我个人ChIP-seq分析的一些脚本和心得。
+
 ## downstream
 
 ### differential_analysis
