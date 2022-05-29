@@ -1,0 +1,256 @@
+---
+title: "DiffBind_analysis_Advanced"
+author: "Guandong Shang"
+date: '2022-05-29'
+output: rmarkdown::github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      collapse = TRUE)
+```
+
+这一个文档主要是介绍下在你有多个类型的ChIP-seq下，如何基于DiffBind批量化的去做差异分析。基本的分析参见之前的那个文档。
+
+这里用的是一套三个时间点的H3K27ac的组蛋白数据
+
+```{bash}
+tree rawdata
+```
+
+# 前期准备
+
+```{r}
+library(DiffBind)
+
+library(BiocParallel)
+
+library(magrittr)
+```
+
+```{r}
+bam_files <- list.files("rawdata/bam",pattern = "bam$", full.names = T)
+peak_files <- list.files("rawdata/peak", full.names = T)
+
+bam_files
+
+peak_files
+```
+
+```{r}
+
+tissue <- rep(c("CIM7d", "SIM3d", "SIM8d"), each = 2)
+
+sample_info <- data.frame(
+  SampleID = paste(tissue, c("R1", "R2"), sep = "_") ,
+  
+  Tissue = tissue,
+  
+  Replicate = 1:2,
+  
+  bamReads = bam_files[1:6], 
+  
+  ControlID = paste(tissue, "control", c("R1", "R2"), sep = "_"), 
+  
+  bamControl = bam_files[7:12], 
+  
+  Peaks = peak_files, 
+  
+  PeakCaller = "narrow"
+  
+  
+) 
+
+sample_info
+```
+
+```{r}
+# Reading in peaksets
+dba <- dba(sampleSheet = sample_info)
+dba
+```
+
+```{r}
+# greylist
+# 这套是拟南芥数据
+chromInfo <- read.table("/data/sgd_data/reference/genome/TAIR10/Athaliana.fa.fai")
+
+head(chromInfo)
+
+seqinfo_obj <- Seqinfo(seqnames = chromInfo$V1,
+                       seqlengths = chromInfo$V2)
+seqinfo_obj
+
+
+dba <- dba.blacklist(dba,
+                     blacklist = FALSE,
+                     greylist = seqinfo_obj)
+
+dba
+```
+
+
+```{r}
+# Counting reads
+# 由于H3K27ac相对来说是narrowPeak，所以我这里将summit关闭
+dba <- dba.count(dba, summits = FALSE)
+
+dba
+```
+
+```{r}
+# 可以画一些图
+# 同时调整颜色
+colorMapCor <- RColorBrewer::brewer.pal(9,"YlGnBu")
+colorMapTissue <- RColorBrewer::brewer.pal(9, "Paired")
+
+dba.plotHeatmap(dba,
+                colScheme = colorMapCor,
+                RowAttributes = DBA_TISSUE,
+                ColAttributes = F,
+                rowSideCols = colorMapTissue)
+
+
+dba.plotPCA(dba,
+            vColors = colorMapTissue,
+            label = DBA_ID,
+            labelSize = 0.5)
+
+```
+
+# 构建函数做差异分析
+
+其实批量化做差异分析的核心就是在`contrast`参数里面配置不同的组合。
+```{r}
+pairwise_DiffBind <- function(index, peakPrefix){
+  treat <- as.character(comp_info[index, 1])
+  control <- as.character(comp_info[index, 2])
+  key_name <- as.character(comp_info[index, 3])
+  
+  print(c(treat, control, key_name))
+  
+  dba.contrast(dba,contrast = c("Tissue",treat,control)) %>% 
+    dba.analyze(bBlacklist = FALSE, bGreylist = FALSE) %>% 
+    dba.report(th = 1) -> result_diff
+  
+  names(result_diff) <- paste0(peakPrefix, "_", names(result_diff))
+  # 加入feature_id列
+  result_diff$feature_id <- names(result_diff)
+  
+  # 把Fold、p-value、FDR加上key_name的前缀
+  colnames(mcols(result_diff))[4:6] <- paste0(key_name, 
+                                              "_",
+                                              colnames(mcols(result_diff))[4:6])
+  
+  # 这时候就可以输出结果成csv保存起来了
+  readr::write_csv(as.data.frame(result_diff),
+                   file = paste0("result/diffPeak_", 
+                                 key_name, 
+                                 ".csv"))
+  
+  # 这里你还可以在函数里面加peak注释、做Go富集等等
+  # 在这里不再赘述
+  
+}
+```
+
+# 批量化做差异分析
+
+```{r}
+# 构建组合的核心函数是expand.grid
+# 如果使用tidy系列会更加简洁一点
+expand.grid(unique(sample_info$Tissue), 
+            unique(sample_info$Tissue)) -> comp_info
+
+comp_info$key <- paste0(comp_info$Var1, "_VS_", comp_info$Var2)
+# 我们只需要SIM3d_VS_CIM7d, SIM8d_VS_SIM3d, SIM8d_VS_CIM7d
+comp_info <- comp_info[c(2, 3, 6), ]
+
+comp_info
+```
+
+```{r}
+peakPrefix = "H3K27ac"
+purrr::walk(1:nrow(comp_info),
+            pairwise_DiffBind,
+            peakPrefix = peakPrefix)
+```
+
+```{r}
+# 看下结果
+list.files("result",
+           pattern = "csv$",
+           full.names = TRUE) %>% 
+  purrr::map(~readr::read_csv(.x, show_col_types = FALSE) %>% 
+                head())
+```
+
+# 其余结果的输出
+
+我个人比较喜欢一个脚本里面干一件事情，所以我并没在上面的函数中做peak注释。大家可以自己单独去读取结果，然后做peak注释。
+
+但是做peak注释需要peak的GRanges对象。所以我们这里再导出标识了peak信息的GRanges对象，尽管这些信息在输出的csv中都是有的。
+```{r}
+peakInfo <- dba.peakset(dba, bRetrieve = TRUE)
+
+# 这里的名字和前面的feature_id保持一致
+names(peakInfo) <- paste0(peakPrefix, "_", names(peakInfo))
+
+peakInfo
+```
+
+我们可以将得到的`peakInfo`信息拆成三部分，方便我们不同的分析目的
+```{r}
+# 首先是peak count矩阵
+# 方便我们画图
+peakCount_mt <- mcols(peakInfo)
+peakCount_mt <- as.matrix(peakCount_mt)
+
+head(peakCount_mt)
+```
+
+```{r}
+# 然后是输出bed文件
+# 用于IGV中查看
+mcols(peakInfo) <- NULL
+rtracklayer::export.bed(peakInfo,
+                        con = "result/H3K27ac.merge.bed")
+
+```
+
+```{bash}
+head result/H3K27ac.merge.bed
+```
+
+```{r}
+# 然后是保存GRanges对象
+# 方便我们后面做注释
+peakInfo$feature_id <- names(peakInfo)
+
+peakInfo
+
+# 然后做一个save就可以了
+```
+
+后面做注释的话，只要`load`这个`peakInfo`对象，然后用注释包做完注释之后，转换成data.frame或者tibble之后，以`feature_id`为key进行`inner_join`就可以将注释结果和差异分析结果结合起来了。由于每个人的物种不一样，这里不做注释演示。
+
+尽管我们有3对差异分析结果，但是其对应的peak属性都是一样的，其实我们完全可以把3个组差异分析的合起来，这样方便我们查看，这样也只需要做一次与peak注释的join。这里提供一种思路供大家参考
+```{r}
+library(dplyr)
+
+# 得到了一个合并之后的结果
+# 然后你只要与peakAnno做一次join即可，连接的key是feature_id
+list.files("result",
+           pattern = "csv$",
+           full.names = TRUE) %>% 
+  purrr::map(.f = ~readr::read_csv(., show_col_types = FALSE) %>% 
+               select(contains(c("feature_id", "Fold",
+                                 "p.value", "FDR")))
+             ) %>% 
+  purrr::reduce(inner_join, by = c("feature_id"))
+```
+
+
+```{r}
+sessionInfo()
+```
