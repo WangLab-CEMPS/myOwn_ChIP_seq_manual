@@ -1,0 +1,10 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+downstream/**/*.rda
+downstream/**/*.csv
+downstream/**/*.bam*
+downstream/**/*.bed*
+downstream/**/*Peak*
